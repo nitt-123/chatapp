@@ -2,8 +2,8 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Simple Video Call</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Simple WebRTC Video Call</title>
   <style>
     body {
       font-family: Arial, sans-serif;
@@ -24,11 +24,14 @@
     .controls {
       margin-top: 10px;
     }
-    button {
+    button, input {
       padding: 10px 15px;
       font-size: 16px;
       border: none;
       border-radius: 6px;
+      margin: 5px;
+    }
+    button {
       background: #28a745;
       color: white;
       cursor: pointer;
@@ -40,58 +43,93 @@
   </style>
 </head>
 <body>
-  <h2>Simple WebRTC Video Call</h2>
-  <video id="localVideo" autoplay muted></video>
-  <video id="remoteVideo" autoplay></video>
+  <h2>Simple WebRTC Video Call with Signaling</h2>
+  <video id="localVideo" autoplay muted playsinline></video>
+  <video id="remoteVideo" autoplay playsinline></video>
+
   <div class="controls">
-    <button id="startBtn">Start</button>
-    <button id="callBtn" disabled>Call</button>
+    <input id="roomInput" placeholder="Enter room name" />
+    <button id="joinBtn">Join Room</button>
+    <button id="callBtn" disabled>Start Call</button>
   </div>
 
+  <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
   <script>
-    const startBtn = document.getElementById('startBtn');
-    const callBtn = document.getElementById('callBtn');
     const localVideo = document.getElementById('localVideo');
     const remoteVideo = document.getElementById('remoteVideo');
+    const joinBtn = document.getElementById('joinBtn');
+    const callBtn = document.getElementById('callBtn');
+    const roomInput = document.getElementById('roomInput');
 
     let localStream;
-    let pc1, pc2;
+    let pc;
+    let socket;
+    let room;
 
-    const configuration = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
+    const config = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
 
-    startBtn.onclick = async () => {
+    joinBtn.onclick = async () => {
+      room = roomInput.value.trim();
+      if (!room) return alert('Enter a room name');
+
+      socket = io('http://localhost:3000'); // Change to your signaling server URL
+
+      socket.emit('join', room);
+
+      socket.on('message', async (data) => {
+        if (!pc) startPeerConnection();
+
+        if (data.type === 'offer') {
+          await pc.setRemoteDescription(new RTCSessionDescription(data));
+          const answer = await pc.createAnswer();
+          await pc.setLocalDescription(answer);
+          socket.emit('message', { room, data: pc.localDescription });
+        } else if (data.type === 'answer') {
+          await pc.setRemoteDescription(new RTCSessionDescription(data));
+        } else if (data.type === 'candidate') {
+          try {
+            await pc.addIceCandidate(data.candidate);
+          } catch (e) {
+            console.error('Error adding received ice candidate', e);
+          }
+        }
+      });
+
       localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
       localVideo.srcObject = localStream;
+
+      joinBtn.disabled = true;
       callBtn.disabled = false;
     };
 
     callBtn.onclick = async () => {
+      if (!pc) startPeerConnection();
+
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+
+      socket.emit('message', { room, data: offer });
+
       callBtn.disabled = true;
+    };
 
-      pc1 = new RTCPeerConnection(configuration);
-      pc2 = new RTCPeerConnection(configuration);
+    function startPeerConnection() {
+      pc = new RTCPeerConnection(config);
 
-      // Exchange ICE candidates
-      pc1.onicecandidate = e => e.candidate && pc2.addIceCandidate(e.candidate);
-      pc2.onicecandidate = e => e.candidate && pc1.addIceCandidate(e.candidate);
+      localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
 
-      // When pc2 gets remote stream
-      pc2.ontrack = e => {
-        remoteVideo.srcObject = e.streams[0];
+      pc.onicecandidate = event => {
+        if (event.candidate) {
+          socket.emit('message', { room, data: { type: 'candidate', candidate: event.candidate } });
+        }
       };
 
-      // Add tracks from local stream
-      localStream.getTracks().forEach(track => pc1.addTrack(track, localStream));
-
-      const offer = await pc1.createOffer();
-      await pc1.setLocalDescription(offer);
-      await pc2.setRemoteDescription(offer);
-
-      const answer = await pc2.createAnswer();
-      await pc2.setLocalDescription(answer);
-      await pc1.setRemoteDescription(answer);
-    };
+      pc.ontrack = event => {
+        remoteVideo.srcObject = event.streams[0];
+      };
+    }
   </script>
 </body>
 </html>
+
 
