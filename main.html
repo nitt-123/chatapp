@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Simple Video Call App</title>
+  <style>
+    body {
+      background: #111;
+      color: #fff;
+      font-family: Arial, sans-serif;
+      text-align: center;
+      padding: 20px;
+    }
+    video {
+      width: 300px;
+      height: 225px;
+      margin: 10px;
+      background: #000;
+      border-radius: 10px;
+    }
+    #controls {
+      margin-top: 20px;
+    }
+    input, button {
+      padding: 8px;
+      margin: 5px;
+      border: none;
+      border-radius: 6px;
+    }
+    button {
+      background-color: #2e7d32;
+      color: white;
+      cursor: pointer;
+    }
+    button:hover {
+      background-color: #1b5e20;
+    }
+  </style>
+</head>
+<body>
+  <h1>📞 WebRTC Video Call</h1>
+
+  <div>
+    <video id="localVideo" autoplay muted></video>
+    <video id="remoteVideo" autoplay></video>
+  </div>
+
+  <div id="controls">
+    <input type="text" id="roomInput" placeholder="Room name">
+    <button onclick="joinRoom()">Join Room</button>
+    <button onclick="copyRoomLink()">🔗 Copy Link</button>
+    <br/>
+    <button onclick="toggleMic()">🎤 Toggle Mic</button>
+    <button onclick="toggleCamera()">📷 Toggle Camera</button>
+  </div>
+
+  <script>
+    const signalingServer = new WebSocket("wss://signaling.simplewebrtc.com/socketserver");
+    const localVideo = document.getElementById("localVideo");
+    const remoteVideo = document.getElementById("remoteVideo");
+    const roomInput = document.getElementById("roomInput");
+
+    let localStream, peerConnection, roomName;
+    let micEnabled = true, cameraEnabled = true;
+
+    const config = {
+      iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
+    };
+
+    signalingServer.onmessage = async (msg) => {
+      const data = JSON.parse(msg.data);
+      if (data.room !== roomName) return;
+
+      if (data.sdp) {
+        await peerConnection.setRemoteDescription(new RTCSessionDescription(data.sdp));
+        if (data.sdp.type === "offer") {
+          const answer = await peerConnection.createAnswer();
+          await peerConnection.setLocalDescription(answer);
+          signalingServer.send(JSON.stringify({ sdp: answer, room: roomName }));
+        }
+      } else if (data.ice) {
+        await peerConnection.addIceCandidate(data.ice);
+      }
+    };
+
+    async function joinRoom() {
+      roomName = roomInput.value || new URLSearchParams(window.location.search).get("room");
+      if (!roomName) return alert("Enter a room name");
+
+      try {
+        localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      } catch (e) {
+        alert("Camera/mic access failed: " + e.message);
+        return;
+      }
+
+      localVideo.srcObject = localStream;
+
+      peerConnection = new RTCPeerConnection(config);
+
+      localStream.getTracks().forEach(track => {
+        peerConnection.addTrack(track, localStream);
+      });
+
+      peerConnection.ontrack = (event) => {
+        remoteVideo.srcObject = event.streams[0];
+      };
+
+      peerConnection.onicecandidate = (event) => {
+        if (event.candidate) {
+          signalingServer.send(JSON.stringify({ ice: event.candidate, room: roomName }));
+        }
+      };
+
+      const offer = await peerConnection.createOffer();
+      await peerConnection.setLocalDescription(offer);
+      signalingServer.send(JSON.stringify({ sdp: offer, room: roomName }));
+    }
+
+    function toggleMic() {
+      if (localStream) {
+        micEnabled = !micEnabled;
+        localStream.getAudioTracks().forEach(track => track.enabled = micEnabled);
+      }
+    }
+
+    function toggleCamera() {
+      if (localStream) {
+        cameraEnabled = !cameraEnabled;
+        localStream.getVideoTracks().forEach(track => track.enabled = cameraEnabled);
+      }
+    }
+
+    function copyRoomLink() {
+      const room = roomInput.value || roomName;
+      if (!room) return alert("Enter a room first.");
+      const url = `${window.location.origin}${window.location.pathname}?room=${room}`;
+      navigator.clipboard.writeText(url);
+      alert("Room link copied:\n" + url);
+    }
+
+    // Auto-join room if ?room= is in URL
+    window.onload = () => {
+      const urlRoom = new URLSearchParams(window.location.search).get("room");
+      if (urlRoom) {
+        roomInput.value = urlRoom;
+        joinRoom();
+      }
+    };
+  </script>
+</body>
+</html>
